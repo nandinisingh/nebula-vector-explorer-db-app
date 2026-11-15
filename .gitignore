@@ -1,0 +1,10 @@
+# Local Python environment and cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Reproducible generated demo data (regenerate with generate_synthetic_data.py)
+data/model_*/
+
+# Local Streamlit secrets
+.streamlit/secrets.toml
