@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #0b1020; color: #e9ecf5; font-family: Inter, system-ui, sans-serif; overflow: hidden; }
+    #maps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+    .map { min-width: 0; border: 1px solid rgba(170,185,220,.16); border-radius: 14px; overflow: hidden; }
+    @media (max-width: 680px) { #maps { grid-template-columns: 1fr; } }
+  </style>
+  <script src="plotly.min.js"></script>
+</head>
+<body>
+  <div id="maps"><div class="map" id="map-a"></div><div class="map" id="map-b"></div></div>
+  <script>
+    const mapA = document.getElementById('map-a');
+    const mapB = document.getElementById('map-b');
+    let ready = false;
+    let syncLock = false;
+    let linkCamera = true;
+    let currentCamera = null;
+    let lastSent = '';
+    let renderArgs = null;
+
+    function post(type, extra = {}) {
+      window.parent.postMessage({isStreamlitMessage: true, type, ...extra}, '*');
+    }
+    function setHeight(height) {
+      post('streamlit:setFrameHeight', {height: Number(height) || 510});
+    }
+    function pointId(point) {
+      const custom = point && point.customdata;
+      if (Array.isArray(custom)) return String(custom[0] ?? '');
+      return custom == null ? '' : String(custom);
+    }
+    function sendSelection(id) {
+      if (!id || id === lastSent) return;
+      lastSent = id;
+      post('streamlit:setComponentValue', {value: id, dataType: 'json'});
+    }
+    function cameraFrom(update, gd) {
+      if (update['scene.camera']) return update['scene.camera'];
+      const camera = JSON.parse(JSON.stringify((gd.layout.scene && gd.layout.scene.camera) || {}));
+      for (const [key, value] of Object.entries(update)) {
+        if (!key.startsWith('scene.camera.')) continue;
+        const path = key.slice('scene.camera.'.length).split('.');
+        let node = camera;
+        while (path.length > 1) {
+          const part = path.shift();
+          node[part] = node[part] || {};
+          node = node[part];
+        }
+        node[path[0]] = value;
+      }
+      return camera;
+    }
+    function connectEvents() {
+      mapA.on('plotly_click', event => { if (event.points && event.points.length) sendSelection(pointId(event.points[0])); });
+      mapB.on('plotly_click', event => { if (event.points && event.points.length) sendSelection(pointId(event.points[0])); });
+      mapA.on('plotly_relayout', update => syncCamera(mapA, mapB, update));
+      mapB.on('plotly_relayout', update => syncCamera(mapB, mapA, update));
+    }
+    function syncCamera(source, target, update) {
+      if (!linkCamera || syncLock || !update || !Object.keys(update).some(k => k.startsWith('scene.camera'))) return;
+      const camera = cameraFrom(update, source);
+      currentCamera = JSON.parse(JSON.stringify(camera));
+      syncLock = true;
+      Plotly.relayout(target, {'scene.camera': camera}).finally(() => { syncLock = false; });
+      setTimeout(() => { syncLock = false; }, 120);
+    }
+    async function render(args) {
+      renderArgs = args;
+      linkCamera = Boolean(args.link_camera);
+      const height = Number(args.height) || 510;
+      setHeight(height + 6);
+      const figureA = JSON.parse(args.figure_a);
+      const figureB = JSON.parse(args.figure_b);
+      if (linkCamera && currentCamera) {
+        figureA.layout.scene.camera = JSON.parse(JSON.stringify(currentCamera));
+        figureB.layout.scene.camera = JSON.parse(JSON.stringify(currentCamera));
+      }
+      const config = {responsive: true, displaylogo: false, scrollZoom: true};
+      if (!ready) {
+        await Promise.all([
+          Plotly.newPlot(mapA, figureA.data, figureA.layout, {...config, ...figureA.config}),
+          Plotly.newPlot(mapB, figureB.data, figureB.layout, {...config, ...figureB.config})
+        ]);
+        ready = true;
+        currentCamera = JSON.parse(JSON.stringify(figureA.layout.scene.camera || {}));
+        connectEvents();
+      } else {
+        await Promise.all([
+          Plotly.react(mapA, figureA.data, figureA.layout, {...config, ...figureA.config}),
+          Plotly.react(mapB, figureB.data, figureB.layout, {...config, ...figureB.config})
+        ]);
+      }
+    }
+    window.addEventListener('message', event => {
+      const data = event.data || {};
+      if (data.type === 'streamlit:render') render(data.args || {});
+    });
+    post('streamlit:componentReady', {apiVersion: 1});
+    setHeight(510);
+  </script>
+</body>
+</html>
