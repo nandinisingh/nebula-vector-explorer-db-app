@@ -37,6 +37,12 @@ st.markdown("""
   .prompt {color:#aab4ca;font-size:.86rem;border-top:1px solid var(--nebula-line);padding-top:.75rem;margin-top:.75rem;}
   div[data-testid="stPlotlyChart"] {border:1px solid var(--nebula-line);background:rgba(13,17,31,.48);border-radius:16px;overflow:hidden;}
   div[data-testid="stRadio"] > label {display:none;}
+  div[data-testid="stRadio"] [role="radiogroup"] {display:flex;gap:.45rem;border-bottom:1px solid var(--nebula-line);margin:.25rem 0 1.2rem;}
+  div[data-testid="stRadio"] label[data-baseweb="radio"] {padding:.62rem .95rem .72rem;margin:0;border-bottom:2px solid transparent;border-radius:8px 8px 0 0;color:#aab4ca;transition:background .15s,color .15s,border-color .15s;}
+  div[data-testid="stRadio"] label[data-baseweb="radio"]:hover {background:rgba(140,131,255,.08);color:#f1f3fb;}
+  div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {border-bottom-color:#9a83ff;color:#f1f3fb;background:rgba(140,131,255,.08);}
+  div[data-testid="stRadio"] label[data-baseweb="radio"] > div:first-child {display:none;}
+  div[data-testid="stRadio"] label[data-baseweb="radio"] p {font-weight:600;margin:0;}
   .muted {opacity:.68;font-size:.88rem;}
 </style>
 """, unsafe_allow_html=True)
@@ -361,6 +367,34 @@ def render_comparison_item(selected: str, left_data: dict, right_data: dict,
                 st.markdown(f'`{mark} {neighbor_id}` · {html.escape(str(neighbor.item_name))}  <span class="muted">cosine {scores[neighbor_id]:.3f}</span>', unsafe_allow_html=True)
 
 
+def render_neighborhood_changes(selected: str, left_data: dict, right_data: dict) -> None:
+    st.markdown('## Neighborhood changes')
+    st.caption('For the selected item, compare its 20 closest items in each model’s original 256D embedding space. A neighbor can be retained, lost, or newly nearby; these are ranking changes, not proof of better recommendations.')
+    a = compute_item_neighbors(selected, left_data['item_embeddings'], left_data['item_ids'], 20)
+    b = compute_item_neighbors(selected, right_data['item_embeddings'], right_data['item_ids'], 20)
+    ids_a, ids_b = {item_id for item_id, _ in a}, {item_id for item_id, _ in b}
+    retained, lost, new = ids_a & ids_b, ids_a - ids_b, ids_b - ids_a
+    count_cols = st.columns(3)
+    count_cols[0].metric('Retained in both', f'{len(retained)} / 20', help='Items appearing in the top-20 neighbor lists for both models.')
+    count_cols[1].metric('Only in Model 1', len(lost), help='Items in Model 1’s top-20 list but not Model 2’s.')
+    count_cols[2].metric('Only in Model 2', len(new), help='Items in Model 2’s top-20 list but not Model 1’s.')
+    metadata = left_data['items'].set_index('item_id')
+    groups = [('Retained in both', [item_id for item_id, _ in a if item_id in retained], dict(a)),
+              ('Only in Model 1', [item_id for item_id, _ in a if item_id in lost], dict(a)),
+              ('Only in Model 2', [item_id for item_id, _ in b if item_id in new], dict(b))]
+    group_cols = st.columns(3, gap='small')
+    for col, (title, ids, scores) in zip(group_cols, groups):
+        with col, st.container(border=True):
+            st.markdown(f'**{title}**')
+            if not ids:
+                st.caption('No items in this group.')
+            for item_id in ids[:8]:
+                neighbor = metadata.loc[item_id]
+                glyph = '♫' if neighbor.item_type == 'music' else '◉'
+                tint = '#20c7df' if neighbor.item_type == 'music' else '#ff7a69'
+                st.markdown(f'<div style="display:flex;align-items:center;gap:.45rem;padding:.35rem 0;border-bottom:1px solid rgba(170,185,220,.1)"><span style="width:28px;height:28px;flex:0 0 28px;border-radius:7px;background:{tint}30;color:{tint};display:grid;place-items:center">{glyph}</span><span><b>{html.escape(str(item_id))}</b><br>{html.escape(str(neighbor.item_name))}<br><span class="muted">{html.escape(str(neighbor.item_type))} · {html.escape(str(neighbor.genre))} · cosine {scores[item_id]:.3f}</span></span></div>', unsafe_allow_html=True)
+
+
 def render_model_comparison():
     st.title('Model comparison')
     st.session_state.setdefault('compare_left', MODELS[0])
@@ -394,7 +428,7 @@ def render_model_comparison():
     else:
         st.caption('Raw projection coordinates · model spaces are not directly comparable. The movement summary remains based on aligned coordinates.')
 
-    tabs = st.tabs(['Embedding space', 'Neighborhood changes', 'Population shift'])
+    tabs = st.tabs(['Embedding space', 'Population shift'])
     with tabs[0]:
         color_col, hint_col = st.columns([1, 3])
         factor = color_col.selectbox('Color by', ['Item type', 'Genre', 'Release era', 'Popularity quartile', 'Language'], key='compare_color_by')
@@ -428,12 +462,12 @@ def render_model_comparison():
             st.caption('The connector marks the selected item’s aligned 3D movement. Camera rotation is linked while aligned view is on.')
         with inspector:
             st.markdown('**Selected item**')
-            options = [''] + list(dict.fromkeys([st.session_state['comparison_selected_item_id']] + mover_ids))
             current = st.session_state['comparison_selected_item_id']
+            options = list(dict.fromkeys([current] + mover_ids))
             if st.session_state.get('compare_mover_select') not in options:
                 st.session_state['compare_mover_select'] = current
             mover = st.selectbox('High-movement items', options,
-                                 format_func=lambda value: 'Choose an item…' if not value else f'{value} · {names[value]}',
+                                 format_func=lambda value: f'{value} · {names[value]}',
                                  key='compare_mover_select')
             if mover and mover != st.session_state['comparison_selected_item_id']:
                 st.session_state['comparison_selected_item_id'] = mover
@@ -442,66 +476,26 @@ def render_model_comparison():
             selected = typed.strip() or st.session_state['comparison_selected_item_id']
             if selected in shared_ids:
                 st.session_state['comparison_selected_item_id'] = selected
-                render_comparison_item(selected, left_data, right_data, left_frame, aligned_right_frame, movement, left_id, right_id)
+                render_comparison_item(selected, left_data, right_data, left_frame, aligned_right_frame, movement, left_id, right_id, include_neighbors=False)
             else:
                 st.warning('That item ID is not in both selected models.')
 
-        upper = max(float(np.quantile(movement, .995)), 1.0)
-        slider_col, value_col, note_col = st.columns([3, .55, 4])
-        threshold = slider_col.slider('Displacement threshold (L2)', 0.0, upper, min(1.0, upper),
-                                      max(upper / 100, .01), format='%.2f', key='compare_movement_threshold')
-        value_col.markdown(f'**{threshold:.2f}**')
-        note_col.caption('Aligned 3D positions · use this threshold to focus on larger or smaller moves.')
-        hist = go.Figure(go.Histogram(x=movement, nbinsx=45, marker_color='#758ee8', opacity=.9))
-        hist.add_vline(x=threshold, line_dash='dash', line_color='#ffca6b', line_width=2,
-                       annotation_text=f'Threshold = {threshold:.2f}', annotation_position='top right')
-        hist.update_layout(title='Item movement distribution', xaxis_title='Displacement (L2) · aligned projection',
-                           yaxis_title='Number of items', height=270, margin={'t': 45, 'b': 20, 'l': 5, 'r': 5},
-                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,17,31,.35)', font={'color': '#e9ecf5'},
-                           xaxis={'gridcolor': 'rgba(180,190,220,.12)'}, yaxis={'gridcolor': 'rgba(180,190,220,.12)'})
-        chart, explanation = st.columns([2.6, 1])
-        chart.plotly_chart(hist, use_container_width=True, key='compare_movement_histogram')
-        with explanation:
-            st.markdown('**How to read this**')
-            st.caption('Model 2 is rotated, centered, and scaled to Model 1 using shared item IDs. Displacement is a map change, not a raw 256D distance or quality score. Neighbor rankings use each model’s original 256D vectors.')
+        st.markdown('---')
+        selected = st.session_state['comparison_selected_item_id']
+        render_neighborhood_changes(selected, left_data, right_data)
 
     with tabs[1]:
-        selected = st.session_state['comparison_selected_item_id']
-        st.markdown('### Neighborhood changes for the selected item')
-        st.caption('Nearest neighbors are ranked by cosine similarity in each model’s original 256D embedding space.')
-        detail, neighbors = st.columns([1, 1.5], gap='medium')
-        with detail:
-            render_comparison_item(selected, left_data, right_data, left_frame, aligned_right_frame, movement, left_id, right_id, include_neighbors=False)
-        with neighbors:
-            a = compute_item_neighbors(selected, left_data['item_embeddings'], left_data['item_ids'], 20)
-            b = compute_item_neighbors(selected, right_data['item_embeddings'], right_data['item_ids'], 20)
-            ids_a, ids_b = {x for x, _ in a}, {x for x, _ in b}
-            retained, lost, new = ids_a & ids_b, ids_a - ids_b, ids_b - ids_a
-            count_cols = st.columns(3)
-            count_cols[0].metric('Retained in both', f'{len(retained)} / 20')
-            count_cols[1].metric('Lost · Model 1 only', len(lost))
-            count_cols[2].metric('New · Model 2 only', len(new))
-            metadata = left_data['items'].set_index('item_id')
-            groups = [('Retained in both', [x for x, _ in a if x in retained], dict(a)),
-                      ('Lost · Model 1 only', [x for x, _ in a if x in lost], dict(a)),
-                      ('New · Model 2 only', [x for x, _ in b if x in new], dict(b))]
-            for title, ids, scores in groups:
-                with st.container(border=True):
-                    st.markdown(f'**{title}**')
-                    if not ids:
-                        st.caption('None')
-                    for item_id in ids[:8]:
-                        neighbor = metadata.loc[item_id]
-                        glyph = '♫' if neighbor.item_type == 'music' else '◉'
-                        tint = '#20c7df' if neighbor.item_type == 'music' else '#ff7a69'
-                        st.markdown(f'<div style="display:flex;align-items:center;gap:.55rem;padding:.22rem 0;border-bottom:1px solid rgba(170,185,220,.1)"><span style="width:30px;height:30px;border-radius:7px;background:{tint}30;color:{tint};display:grid;place-items:center">{glyph}</span><span><b>{html.escape(str(item_id))}</b> · {html.escape(str(neighbor.item_name))}<br><span class="muted">{html.escape(str(neighbor.item_type))} · {html.escape(str(neighbor.genre))} · cosine {scores[item_id]:.3f}</span></span></div>', unsafe_allow_html=True)
-
-    with tabs[2]:
-        st.markdown('### Where is movement concentrated?')
-        st.caption('See which metadata groups account for larger map changes. This is descriptive; it does not say which model is better.')
-        factor = st.selectbox('Group items by', ['Item type', 'Genre', 'Release era', 'Language'], key='compare_population_factor')
+        st.markdown('### Which item groups moved more between models?')
+        st.caption('This view groups items by metadata and summarizes how far their plotted positions moved between the two models. It describes map movement; it does not measure recommendation quality or say which model is better.')
+        st.info('Movement is the straight-line distance between an item’s two 3D projection positions after the spaces are aligned. These map coordinates help compare shape and location visually; they are not the original 256D embedding distance.', icon='ℹ️')
+        factor_col, threshold_col = st.columns([1, 1.4], gap='medium')
+        factor = factor_col.selectbox('Group items by', ['Item type', 'Genre', 'Release era', 'Language'], key='compare_population_factor')
+        upper = max(float(np.quantile(movement, .995)), 1.0)
+        threshold = threshold_col.slider('What counts as a larger move? (3D map units)', 0.0, upper,
+                                         min(1.0, upper), max(upper / 100, .01), format='%.2f',
+                                         key='compare_movement_threshold')
+        st.caption(f'“Above threshold” counts items that moved at least {threshold:.2f} map units. Change the threshold to compare smaller or larger shifts.')
         column = {'Item type': 'item_type', 'Genre': 'genre', 'Release era': 'release_era', 'Language': 'language'}[factor]
-        threshold = st.session_state.get('compare_movement_threshold', 1.0)
         pop = left_frame[['item_id', 'item_type', 'genre', 'release_era', 'language']].copy()
         pop['movement'] = movement
         pop['above'] = pop.movement >= threshold
@@ -513,18 +507,25 @@ def render_model_comparison():
         left_chart, right_chart = st.columns(2, gap='medium')
         fig_median = px.bar(summary.sort_values('median'), x='median', y='Group', orientation='h',
                             color='median', color_continuous_scale=['#20c7df', '#ff7a69'], hover_data=['items', 'p90'])
-        fig_median.update_layout(title='Median aligned movement by group', xaxis_title='Median displacement (L2)', yaxis_title=None,
+        fig_median.update_layout(title='Typical movement by group', xaxis_title='Median straight-line movement (3D map units)', yaxis_title=None,
                                  height=390, coloraxis_showscale=False, paper_bgcolor='rgba(0,0,0,0)',
                                  plot_bgcolor='rgba(13,17,31,.35)', font={'color': '#e9ecf5'})
         fig_share = px.bar(summary.sort_values('above_share'), x='above_share', y='Group', orientation='h',
                            color='above_share', color_continuous_scale=['#20c7df', '#ff7a69'], hover_data=['items'])
-        fig_share.update_layout(title=f'Share above {threshold:.2f} threshold', xaxis={'tickformat': '.0%'},
-                                xaxis_title='Items above threshold', yaxis_title=None, height=390,
+        max_share = float(summary.above_share.max()) if len(summary) else 0.0
+        fig_share.update_layout(title=f'Items moving at least {threshold:.2f} map units',
+                                xaxis={'tickformat': '.1%', 'range': [0, max(.01, max_share * 1.15)]},
+                                xaxis_title='Share of items in group', yaxis_title=None, height=390,
                                 coloraxis_showscale=False, paper_bgcolor='rgba(0,0,0,0)',
                                 plot_bgcolor='rgba(13,17,31,.35)', font={'color': '#e9ecf5'})
         left_chart.plotly_chart(fig_median, use_container_width=True, key='compare_population_median')
         right_chart.plotly_chart(fig_share, use_container_width=True, key='compare_population_share')
-        st.dataframe(summary.rename(columns={'items': 'Item count', 'median': 'Median movement', 'p90': '90th percentile', 'above_share': 'Share above threshold'}), hide_index=True, use_container_width=True)
+        st.markdown('**How to read these measures**')
+        definitions = st.columns(3, gap='small')
+        definitions[0].markdown('**Median movement**  \nThe middle item’s straight-line distance between its two aligned 3D map positions. Half the group moved less; half moved more.')
+        definitions[1].markdown('**90th percentile**  \nA high-movement reference: 90% of items in the group moved this distance or less.')
+        definitions[2].markdown(f'**Share above threshold**  \nThe percentage of group items that moved at least **{threshold:.2f}** map units. Adjust the threshold above to change the cutoff.')
+        st.dataframe(summary.rename(columns={'items': 'Items in group', 'median': 'Median map movement', 'p90': '90th percentile movement', 'above_share': 'Share moving above threshold'}), hide_index=True, use_container_width=True)
 
 
 QUALITY_TARGETS = {
@@ -739,7 +740,9 @@ def render_quality():
             st.info("No recommended items match these metadata filters.")
 
     with slice_col:
-        st.markdown("### Item slice (share of recommendations) ⓘ")
+        st.markdown("### What makes up the recommendations?")
+        st.caption("Each bar is the percentage of this model’s top-50 recommendation slots that match the label, across the selected user cohort and item filters.")
+        st.caption("Music / Podcasts = item type · Genre match = the user’s preferred genre · Release era (2010+) = released in 2010 or later. These are descriptive slices, not higher-is-better quality scores.")
         if exposure_rows:
             slices = []
             for model_id in (model_a, model_b):
@@ -759,7 +762,7 @@ def render_quality():
                     slices.append({"Slice": slice_name, "Share": share, "Model": model_label(model_id), "Recommendations": denominator})
             mix_fig = px.bar(pd.DataFrame(slices), x="Slice", y="Share", color="Model", barmode="group", text_auto=".0%",
                              color_discrete_map={model_label(model_a): "#20c7df", model_label(model_b): "#ff7a69"}, hover_data=["Recommendations"])
-            mix_fig.update_layout(height=225, margin={"l": 8, "r": 8, "t": 8, "b": 10}, yaxis={"range": [0, 1], "tickformat": ".0%"}, xaxis_title=None, legend={"orientation": "h", "y": 1.12})
+            mix_fig.update_layout(height=225, margin={"l": 8, "r": 8, "t": 8, "b": 10}, yaxis={"range": [0, 1], "tickformat": ".0%", "title": "Share of recommendation slots"}, xaxis_title=None, legend={"orientation": "h", "y": 1.12})
             st.plotly_chart(mix_fig, use_container_width=True, key="quality_item_slice")
         else:
             st.info("No recommended items match these metadata filters.")
@@ -844,9 +847,9 @@ def render_quality():
     st.caption("All values are synthetic demonstration metrics. Confidence intervals summarize variation across the included users and are not a substitute for a time-based offline evaluation.")
 
 
-st.markdown('<div class="nebula-header"><div class="nebula-brand"><span>✦</span>NEBULA <span class="nebula-kicker">/ RECOMMENDATION LAB</span></div><div class="nebula-kicker">LOCAL EXPLORATION WORKSPACE</div></div>', unsafe_allow_html=True)
+st.markdown('## ✦ Nebula')
+st.caption('RECOMMENDATION LAB · LOCAL EXPLORATION WORKSPACE')
 page = st.radio("Workspace", ["Item space", "Compare models", "Model quality"], horizontal=True, label_visibility="collapsed", key="workspace_page")
-st.markdown('<div style="border-bottom:1px solid rgba(170,185,220,.13);margin:-.25rem 0 1.2rem"></div>', unsafe_allow_html=True)
 
 if page == "Item space":
     render_explorer()
