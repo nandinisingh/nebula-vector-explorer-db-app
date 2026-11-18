@@ -484,32 +484,18 @@ def render_model_comparison():
         selected = st.session_state['comparison_selected_item_id']
         render_neighborhood_changes(selected, left_data, right_data)
 
-        upper = max(float(np.quantile(movement, .995)), 1.0)
-        slider_col, value_col, note_col = st.columns([3, .55, 4])
-        threshold = slider_col.slider('Displacement threshold (L2)', 0.0, upper, min(1.0, upper),
-                                      max(upper / 100, .01), format='%.2f', key='compare_movement_threshold')
-        value_col.markdown(f'**{threshold:.2f}**')
-        note_col.caption('Aligned 3D positions · use this threshold to focus on larger or smaller moves.')
-        hist = go.Figure(go.Histogram(x=movement, nbinsx=45, marker_color='#758ee8', opacity=.9))
-        hist.add_vline(x=threshold, line_dash='dash', line_color='#ffca6b', line_width=2,
-                       annotation_text=f'Threshold = {threshold:.2f}', annotation_position='top right')
-        hist.update_layout(title='Item movement distribution', xaxis_title='Displacement (L2) · aligned projection',
-                           yaxis_title='Number of items', height=270, margin={'t': 45, 'b': 20, 'l': 5, 'r': 5},
-                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,17,31,.35)', font={'color': '#e9ecf5'},
-                           xaxis={'gridcolor': 'rgba(180,190,220,.12)'}, yaxis={'gridcolor': 'rgba(180,190,220,.12)'})
-        chart, explanation = st.columns([2.6, 1])
-        chart.plotly_chart(hist, use_container_width=True, key='compare_movement_histogram')
-        with explanation:
-            st.markdown('**How to read this**')
-            st.caption('Model 2 is rotated, centered, and scaled to Model 1 using shared item IDs. Displacement is a map change, not a raw 256D distance or quality score. Neighbor rankings use each model’s original 256D vectors.')
-
     with tabs[1]:
         st.markdown('### Which item groups moved more between models?')
         st.caption('This view groups items by metadata and summarizes how far their plotted positions moved between the two models. It describes map movement; it does not measure recommendation quality or say which model is better.')
         st.info('Movement is the straight-line distance between an item’s two 3D projection positions after the spaces are aligned. These map coordinates help compare shape and location visually; they are not the original 256D embedding distance.', icon='ℹ️')
-        factor = st.selectbox('Group items by', ['Item type', 'Genre', 'Release era', 'Language'], key='compare_population_factor')
+        factor_col, threshold_col = st.columns([1, 1.4], gap='medium')
+        factor = factor_col.selectbox('Group items by', ['Item type', 'Genre', 'Release era', 'Language'], key='compare_population_factor')
+        upper = max(float(np.quantile(movement, .995)), 1.0)
+        threshold = threshold_col.slider('What counts as a larger move? (3D map units)', 0.0, upper,
+                                         min(1.0, upper), max(upper / 100, .01), format='%.2f',
+                                         key='compare_movement_threshold')
+        st.caption(f'“Above threshold” counts items that moved at least {threshold:.2f} map units. Change the threshold to compare smaller or larger shifts.')
         column = {'Item type': 'item_type', 'Genre': 'genre', 'Release era': 'release_era', 'Language': 'language'}[factor]
-        threshold = st.session_state.get('compare_movement_threshold', 1.0)
         pop = left_frame[['item_id', 'item_type', 'genre', 'release_era', 'language']].copy()
         pop['movement'] = movement
         pop['above'] = pop.movement >= threshold
@@ -538,7 +524,7 @@ def render_model_comparison():
         definitions = st.columns(3, gap='small')
         definitions[0].markdown('**Median movement**  \nThe middle item’s straight-line distance between its two aligned 3D map positions. Half the group moved less; half moved more.')
         definitions[1].markdown('**90th percentile**  \nA high-movement reference: 90% of items in the group moved this distance or less.')
-        definitions[2].markdown(f'**Share above threshold**  \nThe percentage of group items that moved at least **{threshold:.2f}** map units. Adjust the threshold on the Embedding space tab.')
+        definitions[2].markdown(f'**Share above threshold**  \nThe percentage of group items that moved at least **{threshold:.2f}** map units. Adjust the threshold above to change the cutoff.')
         st.dataframe(summary.rename(columns={'items': 'Items in group', 'median': 'Median map movement', 'p90': '90th percentile movement', 'above_share': 'Share moving above threshold'}), hide_index=True, use_container_width=True)
 
 
@@ -754,7 +740,9 @@ def render_quality():
             st.info("No recommended items match these metadata filters.")
 
     with slice_col:
-        st.markdown("### Item slice (share of recommendations) ⓘ")
+        st.markdown("### What makes up the recommendations?")
+        st.caption("Each bar is the percentage of this model’s top-50 recommendation slots that match the label, across the selected user cohort and item filters.")
+        st.caption("Music / Podcasts = item type · Genre match = the user’s preferred genre · Release era (2010+) = released in 2010 or later. These are descriptive slices, not higher-is-better quality scores.")
         if exposure_rows:
             slices = []
             for model_id in (model_a, model_b):
@@ -774,7 +762,7 @@ def render_quality():
                     slices.append({"Slice": slice_name, "Share": share, "Model": model_label(model_id), "Recommendations": denominator})
             mix_fig = px.bar(pd.DataFrame(slices), x="Slice", y="Share", color="Model", barmode="group", text_auto=".0%",
                              color_discrete_map={model_label(model_a): "#20c7df", model_label(model_b): "#ff7a69"}, hover_data=["Recommendations"])
-            mix_fig.update_layout(height=225, margin={"l": 8, "r": 8, "t": 8, "b": 10}, yaxis={"range": [0, 1], "tickformat": ".0%"}, xaxis_title=None, legend={"orientation": "h", "y": 1.12})
+            mix_fig.update_layout(height=225, margin={"l": 8, "r": 8, "t": 8, "b": 10}, yaxis={"range": [0, 1], "tickformat": ".0%", "title": "Share of recommendation slots"}, xaxis_title=None, legend={"orientation": "h", "y": 1.12})
             st.plotly_chart(mix_fig, use_container_width=True, key="quality_item_slice")
         else:
             st.info("No recommended items match these metadata filters.")
@@ -859,9 +847,8 @@ def render_quality():
     st.caption("All values are synthetic demonstration metrics. Confidence intervals summarize variation across the included users and are not a substitute for a time-based offline evaluation.")
 
 
-brand, context = st.columns([3, 1], vertical_alignment='center')
-brand.markdown('### ✦ NEBULA / RECOMMENDATION LAB')
-context.markdown('<div style="text-align:right;color:#9ba6bf;font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;padding-top:.6rem">Local exploration workspace</div>', unsafe_allow_html=True)
+st.markdown('## ✦ Nebula')
+st.caption('RECOMMENDATION LAB · LOCAL EXPLORATION WORKSPACE')
 page = st.radio("Workspace", ["Item space", "Compare models", "Model quality"], horizontal=True, label_visibility="collapsed", key="workspace_page")
 
 if page == "Item space":
